@@ -309,21 +309,35 @@ where
     }
 }
 
+#[cfg(feature = "embedded-tls")]
+pub trait TlsCipherSuite: embedded_tls::TlsCipherSuite {}
+#[cfg(feature = "embedded-tls")]
+impl<T: embedded_tls::TlsCipherSuite> TlsCipherSuite for T {}
+#[cfg(feature = "embedded-tls")]
+type TlsCipherSuiteDefault = embedded_tls::Aes128GcmSha256;
+#[cfg(not(feature = "embedded-tls"))]
+pub trait TlsCipherSuite {}
+#[cfg(not(feature = "embedded-tls"))]
+impl <T> TlsCipherSuite for T {}
+#[cfg(not(feature = "embedded-tls"))]
+type TlsCipherSuiteDefault = ();
+
 /// Represents a HTTP connection that may be encrypted or unencrypted.
 #[allow(clippy::large_enum_variant)]
-pub enum HttpConnection<'conn, C>
+pub enum HttpConnection<'conn, C, CiphterSuite = TlsCipherSuiteDefault>
 where
     C: Read + Write,
+    CiphterSuite: TlsCipherSuite + 'static
 {
     Plain(C),
     PlainBuffered(BufferedWrite<'conn, C>),
     #[cfg(feature = "mbedtls-rs")]
     Tls(mbedtls_rs::Session<'conn, C>),
     #[cfg(feature = "embedded-tls")]
-    Tls(embedded_tls::TlsConnection<'conn, C, embedded_tls::Aes128GcmSha256>),
+    Tls(embedded_tls::TlsConnection<'conn, C, CiphterSuite>),
     #[cfg(all(not(feature = "embedded-tls"), not(feature = "mbedtls-rs")))]
-    Tls((&'conn mut (), core::convert::Infallible)), // Variant is impossible to create, but we need it to avoid "unused lifetime" warning
-}
+    Tls((&'conn mut (), core::convert::Infallible, CiphterSuite,)), // Variant is impossible to create, but we need it to avoid "unused lifetime" warning and unused generic parameter error
+}   
 
 #[cfg(feature = "defmt")]
 impl<C> defmt::Format for HttpConnection<'_, C>
