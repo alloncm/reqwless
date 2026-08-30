@@ -120,9 +120,10 @@ pub trait TryBufRead: embedded_io_async::Read {
     fn try_consume(&mut self, _amt: usize) {}
 }
 
-impl<C> TryBufRead for crate::client::HttpConnection<'_, C>
+impl<C, CipherSuite> TryBufRead for crate::client::HttpConnection<'_, C, CipherSuite>
 where
     C: embedded_io_async::Read + embedded_io_async::Write,
+    CipherSuite: crate::client::TlsCipherSuite + 'static
 {
     async fn try_fill_buf(&mut self) -> Option<Result<&[u8], Self::Error>> {
         // embedded-tls has its own internal buffer, let's prefer that if we can

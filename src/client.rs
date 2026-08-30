@@ -320,13 +320,13 @@ pub trait TlsCipherSuite: embedded_tls::TlsCipherSuite {}
 #[cfg(feature = "embedded-tls")]
 impl<T: embedded_tls::TlsCipherSuite> TlsCipherSuite for T {}
 #[cfg(feature = "embedded-tls")]
-type TlsCipherSuiteDefault = embedded_tls::Aes128GcmSha256;
+pub type TlsCipherSuiteDefault = embedded_tls::Aes128GcmSha256;
 #[cfg(not(feature = "embedded-tls"))]
 pub trait TlsCipherSuite {}
 #[cfg(not(feature = "embedded-tls"))]
 impl <T> TlsCipherSuite for T {}
 #[cfg(not(feature = "embedded-tls"))]
-type TlsCipherSuiteDefault = ();
+pub type TlsCipherSuiteDefault = ();
 
 /// Represents a HTTP connection that may be encrypted or unencrypted.
 #[allow(clippy::large_enum_variant)]
@@ -346,9 +346,10 @@ where
 }   
 
 #[cfg(feature = "defmt")]
-impl<C> defmt::Format for HttpConnection<'_, C>
+impl<C, CipherSuite> defmt::Format for HttpConnection<'_, C, CipherSuite>
 where
     C: Read + Write,
+    CipherSuite: TlsCipherSuite
 {
     fn format(&self, fmt: defmt::Formatter) {
         match self {
@@ -359,9 +360,10 @@ where
     }
 }
 
-impl<C> core::fmt::Debug for HttpConnection<'_, C>
+impl<C, CipherSuite> core::fmt::Debug for HttpConnection<'_, C, CipherSuite>
 where
     C: Read + Write,
+    CipherSuite: TlsCipherSuite
 {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         match self {
@@ -372,15 +374,16 @@ where
     }
 }
 
-impl<'conn, T> HttpConnection<'conn, T>
+impl<'conn, T, C> HttpConnection<'conn, T, C>
 where
     T: Read + Write,
+    C: TlsCipherSuite + 'static
 {
     /// Turn the request into a buffered request.
     ///
     /// This is only relevant if no TLS is used, as `embedded-tls` buffers internally and we reuse
     /// its buffer for non-TLS connections.
-    pub fn into_buffered<'buf>(self, tx_buf: &'buf mut [u8]) -> HttpConnection<'buf, T>
+    pub fn into_buffered<'buf>(self, tx_buf: &'buf mut [u8]) -> HttpConnection<'buf, T, C>
     where
         'conn: 'buf,
     {
@@ -401,7 +404,7 @@ where
         &'conn mut self,
         request: Request<'req, B>,
         rx_buf: &'buf mut [u8],
-    ) -> Result<Response<'conn, 'buf, HttpConnection<'conn, T>>, Error> {
+    ) -> Result<Response<'conn, 'buf, HttpConnection<'conn, T, C>>, Error> {
         self.write_request(&request).await?;
         self.flush().await?;
         Response::read(self, request.method, rx_buf).await
@@ -455,16 +458,18 @@ where
     }
 }
 
-impl<T> ErrorType for HttpConnection<'_, T>
+impl<T, CipherSuite> ErrorType for HttpConnection<'_, T, CipherSuite>
 where
     T: Read + Write,
+    CipherSuite: TlsCipherSuite
 {
     type Error = embedded_io::ErrorKind;
 }
 
-impl<T> Read for HttpConnection<'_, T>
+impl<T, CipherSuite> Read for HttpConnection<'_, T, CipherSuite>
 where
     T: Read + Write,
+    CipherSuite: TlsCipherSuite
 {
     async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         match self {
@@ -478,9 +483,10 @@ where
     }
 }
 
-impl<T> Write for HttpConnection<'_, T>
+impl<T, CipherSuite> Write for HttpConnection<'_, T, CipherSuite>
 where
     T: Read + Write,
+    CipherSuite: TlsCipherSuite
 {
     async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
         match self {
@@ -518,16 +524,17 @@ where
     request: Option<DefaultRequestBuilder<'conn, B>>,
 }
 
-impl<'conn, C, B> HttpRequestHandle<'conn, C, B>
+impl<'conn, C, B, CipherSuite> HttpRequestHandle<'conn, C, B, CipherSuite>
 where
     C: Read + Write,
     B: RequestBody,
+    CipherSuite: TlsCipherSuite + 'static
 {
     /// Turn the request into a buffered request.
     ///
     /// This is only relevant if no TLS is used, as `embedded-tls` buffers internally and we reuse
     /// its buffer for non-TLS connections.
-    pub fn into_buffered<'buf>(self, tx_buf: &'buf mut [u8]) -> HttpRequestHandle<'buf, C, B>
+    pub fn into_buffered<'buf>(self, tx_buf: &'buf mut [u8]) -> HttpRequestHandle<'buf, C, B, CipherSuite>
     where
         'conn: 'buf,
     {
@@ -545,7 +552,7 @@ where
     pub async fn send<'req, 'buf>(
         &'req mut self,
         rx_buf: &'buf mut [u8],
-    ) -> Result<Response<'req, 'buf, HttpConnection<'conn, C>>, Error> {
+    ) -> Result<Response<'req, 'buf, HttpConnection<'conn, C, CipherSuite>>, Error> {
         let request = self.request.take().ok_or(Error::AlreadySent)?.build();
         self.conn.write_request(&request).await?;
         self.conn.flush().await?;
@@ -553,12 +560,13 @@ where
     }
 }
 
-impl<'m, C, B> RequestBuilder<'m, B> for HttpRequestHandle<'m, C, B>
+impl<'m, C, B, CipherSuite> RequestBuilder<'m, B> for HttpRequestHandle<'m, C, B, CipherSuite>
 where
     C: Read + Write,
     B: RequestBody,
+    CipherSuite: TlsCipherSuite + 'static
 {
-    type WithBody<T: RequestBody> = HttpRequestHandle<'m, C, T>;
+    type WithBody<T: RequestBody> = HttpRequestHandle<'m, C, T, CipherSuite>;
 
     fn headers(mut self, headers: &'m [(&'m str, &'m str)]) -> Self {
         self.request = Some(self.request.unwrap().headers(headers));
@@ -615,15 +623,16 @@ where
     pub base_path: &'res str,
 }
 
-impl<'res, C> HttpResource<'res, C>
+impl<'res, C, CipherSuite> HttpResource<'res, C, CipherSuite>
 where
     C: Read + Write,
+    CipherSuite: TlsCipherSuite + 'static,
 {
     /// Turn the resource into a buffered resource
     ///
     /// This is only relevant if no TLS is used, as `embedded-tls` buffers internally and we reuse
     /// its buffer for non-TLS connections.
-    pub fn into_buffered<'buf>(self, tx_buf: &'buf mut [u8]) -> HttpResource<'buf, C>
+    pub fn into_buffered<'buf>(self, tx_buf: &'buf mut [u8]) -> HttpResource<'buf, C, CipherSuite>
     where
         'res: 'buf,
     {
@@ -638,7 +647,7 @@ where
         &'req mut self,
         method: Method,
         path: &'req str,
-    ) -> HttpResourceRequestBuilder<'req, 'res, C, ()> {
+    ) -> HttpResourceRequestBuilder<'req, 'res, C, (), CipherSuite> {
         HttpResourceRequestBuilder {
             conn: &mut self.conn,
             request: Request::new(method, path).host(self.host),
@@ -647,27 +656,27 @@ where
     }
 
     /// Create a new scoped GET http request.
-    pub fn get<'req>(&'req mut self, path: &'req str) -> HttpResourceRequestBuilder<'req, 'res, C, ()> {
+    pub fn get<'req>(&'req mut self, path: &'req str) -> HttpResourceRequestBuilder<'req, 'res, C, (), CipherSuite> {
         self.request(Method::GET, path)
     }
 
     /// Create a new scoped POST http request.
-    pub fn post<'req>(&'req mut self, path: &'req str) -> HttpResourceRequestBuilder<'req, 'res, C, ()> {
+    pub fn post<'req>(&'req mut self, path: &'req str) -> HttpResourceRequestBuilder<'req, 'res, C, (), CipherSuite> {
         self.request(Method::POST, path)
     }
 
     /// Create a new scoped PUT http request.
-    pub fn put<'req>(&'req mut self, path: &'req str) -> HttpResourceRequestBuilder<'req, 'res, C, ()> {
+    pub fn put<'req>(&'req mut self, path: &'req str) -> HttpResourceRequestBuilder<'req, 'res, C, (), CipherSuite> {
         self.request(Method::PUT, path)
     }
 
     /// Create a new scoped DELETE http request.
-    pub fn delete<'req>(&'req mut self, path: &'req str) -> HttpResourceRequestBuilder<'req, 'res, C, ()> {
+    pub fn delete<'req>(&'req mut self, path: &'req str) -> HttpResourceRequestBuilder<'req, 'res, C, (), CipherSuite> {
         self.request(Method::DELETE, path)
     }
 
     /// Create a new scoped HEAD http request.
-    pub fn head<'req>(&'req mut self, path: &'req str) -> HttpResourceRequestBuilder<'req, 'res, C, ()> {
+    pub fn head<'req>(&'req mut self, path: &'req str) -> HttpResourceRequestBuilder<'req, 'res, C, (), CipherSuite> {
         self.request(Method::HEAD, path)
     }
 
@@ -681,7 +690,7 @@ where
         &'req mut self,
         mut request: Request<'req, B>,
         rx_buf: &'buf mut [u8],
-    ) -> Result<Response<'req, 'buf, HttpConnection<'res, C>>, Error> {
+    ) -> Result<Response<'req, 'buf, HttpConnection<'res, C, CipherSuite>>, Error> {
         request.base_path = Some(self.base_path);
         self.conn.write_request(&request).await?;
         self.conn.flush().await?;
@@ -689,20 +698,22 @@ where
     }
 }
 
-pub struct HttpResourceRequestBuilder<'req, 'conn, C, B>
+pub struct HttpResourceRequestBuilder<'req, 'conn, C, B, CipherSuite>
 where
     C: Read + Write,
     B: RequestBody,
+    CipherSuite: TlsCipherSuite + 'static
 {
-    conn: &'req mut HttpConnection<'conn, C>,
+    conn: &'req mut HttpConnection<'conn, C, CipherSuite>,
     base_path: &'req str,
     request: DefaultRequestBuilder<'req, B>,
 }
 
-impl<'req, 'conn, C, B> HttpResourceRequestBuilder<'req, 'conn, C, B>
+impl<'req, 'conn, C, B, CipherSuite> HttpResourceRequestBuilder<'req, 'conn, C, B, CipherSuite>
 where
     C: Read + Write,
     B: RequestBody,
+    CipherSuite: TlsCipherSuite
 {
     /// Send the request.
     ///
@@ -713,7 +724,7 @@ where
     pub async fn send<'buf>(
         self,
         rx_buf: &'buf mut [u8],
-    ) -> Result<Response<'req, 'buf, HttpConnection<'conn, C>>, Error> {
+    ) -> Result<Response<'req, 'buf, HttpConnection<'conn, C, CipherSuite>>, Error> {
         let conn = self.conn;
         let mut request = self.request.build();
         request.base_path = Some(self.base_path);
@@ -723,12 +734,13 @@ where
     }
 }
 
-impl<'req, 'conn, C, B> RequestBuilder<'req, B> for HttpResourceRequestBuilder<'req, 'conn, C, B>
+impl<'req, 'conn, C, B, CipherSuite> RequestBuilder<'req, B> for HttpResourceRequestBuilder<'req, 'conn, C, B, CipherSuite>
 where
     C: Read + Write,
     B: RequestBody,
+    CipherSuite: TlsCipherSuite
 {
-    type WithBody<T: RequestBody> = HttpResourceRequestBuilder<'req, 'conn, C, T>;
+    type WithBody<T: RequestBody> = HttpResourceRequestBuilder<'req, 'conn, C, T, CipherSuite>;
 
     fn headers(mut self, headers: &'req [(&'req str, &'req str)]) -> Self {
         self.request = self.request.headers(headers);
@@ -806,7 +818,7 @@ mod tests {
     #[tokio::test]
     async fn with_empty_body() {
         let mut buffer = VecBuffer::default();
-        let mut conn = HttpConnection::Plain(&mut buffer);
+        let mut conn: HttpConnection<'_, &mut VecBuffer> = HttpConnection::Plain(&mut buffer);
 
         let request = Request::new(Method::POST, "/").body([].as_slice()).build();
         conn.write_request(&request).await.unwrap();
@@ -817,7 +829,7 @@ mod tests {
     #[tokio::test]
     async fn with_known_body() {
         let mut buffer = VecBuffer::default();
-        let mut conn = HttpConnection::Plain(&mut buffer);
+        let mut conn: HttpConnection<'_, &mut VecBuffer> = HttpConnection::Plain(&mut buffer);
 
         let request = Request::new(Method::POST, "/").body(b"BODY".as_slice()).build();
         conn.write_request(&request).await.unwrap();
@@ -843,7 +855,7 @@ mod tests {
     #[tokio::test]
     async fn with_unknown_body_unbuffered() {
         let mut buffer = VecBuffer::default();
-        let mut conn = HttpConnection::Plain(&mut buffer);
+        let mut conn: HttpConnection<'_, &mut VecBuffer> = HttpConnection::Plain(&mut buffer);
 
         static CHUNKS: [&'static [u8]; 2] = [b"PART1", b"PART2"];
         let request = Request::new(Method::POST, "/").body(ChunkedBody(&CHUNKS)).build();
@@ -859,7 +871,7 @@ mod tests {
     async fn with_unknown_body_buffered() {
         let mut buffer = VecBuffer::default();
         let mut tx_buf = [0; 1024];
-        let mut conn = HttpConnection::Plain(&mut buffer).into_buffered(&mut tx_buf);
+        let mut conn: HttpConnection<'_, &mut VecBuffer> = HttpConnection::Plain(&mut buffer).into_buffered(&mut tx_buf);
 
         static CHUNKS: [&'static [u8]; 2] = [b"PART1", b"PART2"];
         let request = Request::new(Method::POST, "/").body(ChunkedBody(&CHUNKS)).build();
