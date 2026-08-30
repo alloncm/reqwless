@@ -9,6 +9,7 @@ use crate::headers::ContentType;
 use crate::request::*;
 use crate::response::*;
 use buffered_io::asynch::BufferedWrite;
+use core::marker::PhantomData;
 use core::net::SocketAddr;
 use embedded_io::Error as _;
 use embedded_io::ErrorType;
@@ -16,7 +17,7 @@ use embedded_io_async::{Read, Write};
 use embedded_nal_async::{Dns, TcpConnect};
 #[cfg(feature = "embedded-tls")]
 use embedded_tls::{
-    Aes128GcmSha256, CryptoProvider, NoClock, SignatureScheme, TlsError, TlsVerifier, pki::CertVerifier,
+    CryptoProvider, NoClock, SignatureScheme, TlsError, TlsVerifier, pki::CertVerifier,
 };
 use nourl::{Url, UrlScheme};
 #[cfg(feature = "embedded-tls")]
@@ -26,15 +27,17 @@ use rand_core::CryptoRngCore;
 
 /// An async HTTP client that can establish a TCP connection and perform
 /// HTTP requests.
-pub struct HttpClient<'a, T, D>
+pub struct HttpClient<'a, T, D, C = TlsCipherSuiteDefault>
 where
     T: TcpConnect + 'a,
     D: Dns + 'a,
+    C: TlsCipherSuite
 {
     client: &'a T,
     dns: &'a D,
     #[cfg(any(feature = "embedded-tls", feature = "mbedtls-rs"))]
     tls: Option<TlsConfig<'a>>,
+    _cipher: PhantomData<C>
 }
 
 /// Type for TLS configuration of HTTP client.
@@ -63,16 +66,16 @@ pub struct TlsConfig<'a> {
 }
 
 #[cfg(feature = "embedded-tls")]
-struct Provider<'a> {
+struct Provider<'a, CipherSuite: TlsCipherSuite> {
     rng: rand_chacha::ChaCha8Rng,
-    verifier: CertVerifier<'a, Aes128GcmSha256, NoClock, 4096>,
+    verifier: CertVerifier<'a, CipherSuite, NoClock, 4096>,
     cert: Option<embedded_tls::Certificate<&'a [u8]>>,
     priv_key: Option<&'a [u8]>,
 }
 
 #[cfg(feature = "embedded-tls")]
-impl<'a> CryptoProvider for Provider<'a> {
-    type CipherSuite = Aes128GcmSha256;
+impl<'a, CipherSuite: TlsCipherSuite> CryptoProvider for Provider<'a, CipherSuite> {
+    type CipherSuite = CipherSuite;
     type Signature = DerSignature;
 
     fn rng(&mut self) -> impl CryptoRngCore {
@@ -145,10 +148,11 @@ impl<'a, const RX_SIZE: usize, const TX_SIZE: usize> TlsConfig<'a, RX_SIZE, TX_S
     }
 }
 
-impl<'a, T, D> HttpClient<'a, T, D>
+impl<'a, T, D, C> HttpClient<'a, T, D, C>
 where
     T: TcpConnect + 'a,
     D: Dns + 'a,
+    C: TlsCipherSuite + 'static,
 {
     /// Create a new HTTP client for a given connection handle and a target host.
     pub fn new(client: &'a T, dns: &'a D) -> Self {
@@ -157,6 +161,7 @@ where
             dns,
             #[cfg(any(feature = "embedded-tls", feature = "mbedtls-rs"))]
             tls: None,
+            _cipher: PhantomData::default(),
         }
     }
 
@@ -167,13 +172,14 @@ where
             client,
             dns,
             tls: Some(tls),
+            _cipher: PhantomData::default(),
         }
     }
 
     async fn connect<'conn>(
         &'conn mut self,
         url: &Url<'_>,
-    ) -> Result<HttpConnection<'conn, T::Connection<'conn>>, Error> {
+    ) -> Result<HttpConnection<'conn, T::Connection<'conn>, C>, Error> {
         let host = url.host();
         let port = url.port_or_default();
 
@@ -222,7 +228,7 @@ where
                 let rng = ChaCha8Rng::seed_from_u64(tls.seed);
                 let mut config = TlsConfig::new().with_server_name(url.host());
 
-                let mut conn: embedded_tls::TlsConnection<'conn, T::Connection<'conn>, embedded_tls::Aes128GcmSha256> =
+                let mut conn: embedded_tls::TlsConnection<'conn, T::Connection<'conn>, C> =
                     embedded_tls::TlsConnection::new(conn, tls.read_buffer, tls.write_buffer);
 
                 match tls.verify {
@@ -284,7 +290,7 @@ where
         &'conn mut self,
         method: Method,
         url: &'conn str,
-    ) -> Result<HttpRequestHandle<'conn, T::Connection<'conn>, ()>, Error> {
+    ) -> Result<HttpRequestHandle<'conn, T::Connection<'conn>, (), C>, Error> {
         let url = Url::parse(url)?;
         let conn = self.connect(&url).await?;
         Ok(HttpRequestHandle {
@@ -298,7 +304,7 @@ where
     pub async fn resource<'res>(
         &'res mut self,
         resource_url: &'res str,
-    ) -> Result<HttpResource<'res, T::Connection<'res>>, Error> {
+    ) -> Result<HttpResource<'res, T::Connection<'res>, C>, Error> {
         let resource_url = Url::parse(resource_url)?;
         let conn = self.connect(&resource_url).await?;
         Ok(HttpResource {
@@ -502,12 +508,13 @@ where
 /// A HTTP request handle
 ///
 /// The underlying connection is closed when drop'ed.
-pub struct HttpRequestHandle<'conn, C, B>
+pub struct HttpRequestHandle<'conn, C, B, CipherSuite = TlsCipherSuiteDefault>
 where
     C: Read + Write,
     B: RequestBody,
+    CipherSuite: TlsCipherSuite + 'static,
 {
-    pub conn: HttpConnection<'conn, C>,
+    pub conn: HttpConnection<'conn, C, CipherSuite>,
     request: Option<DefaultRequestBuilder<'conn, B>>,
 }
 
@@ -598,11 +605,12 @@ where
 /// A HTTP resource describing a scoped endpoint
 ///
 /// The underlying connection is closed when drop'ed.
-pub struct HttpResource<'res, C>
+pub struct HttpResource<'res, C, CipherSuite = TlsCipherSuiteDefault>
 where
     C: Read + Write,
+    CipherSuite: TlsCipherSuite + 'static,
 {
-    pub conn: HttpConnection<'res, C>,
+    pub conn: HttpConnection<'res, C, CipherSuite>,
     pub host: &'res str,
     pub base_path: &'res str,
 }
